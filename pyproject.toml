@@ -1,0 +1,15 @@
+[project]
+name = "project-01-file-qa-rag-chatbot-app-with-chatgpt-langchain-and-streamlit"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11.14"
+dependencies = [
+    "chromadb>=1.5.5",
+    "langchain>=1.2.12",
+    "langchain-community>=0.4.1",
+    "langchain-ollama>=0.1.0",
+    "pymupdf>=1.27.2",
+    "pyngrok>=7.5.1",
+    "streamlit>=1.55.0",
+]

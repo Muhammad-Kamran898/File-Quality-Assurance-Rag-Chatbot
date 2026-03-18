@@ -1,0 +1,24 @@
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8989
+  Network URL: http://192.168.100.8:8989
+
+E:\Projects\MyProjects\Project_01_File_QA_RAG_Chatbot_APP_with_ChatGPT_Langchain_and_streamlit\app.py:78: LangChainDeprecationWarning: The class `Chroma` was deprecated in LangChain 0.2.9 and will be removed in 1.0. An updated version of the class exists in the `langchain-chroma package and should be used instead. To use it run `pip install -U `langchain-chroma` and import as `from `langchain_chroma import Chroma``.
+  vector_db = Chroma(
+2026-03-19 00:15:06.440 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-03-19 00:15:48.709 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-03-19 00:16:15.234 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+  Stopping...

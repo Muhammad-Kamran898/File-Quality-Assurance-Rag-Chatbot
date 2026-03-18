@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venvScriptspip install:*)",
+      "Bash(source .venv/Scripts/activate)",
+      "Bash(pip install:*)",
+      "Bash(uv pip:*)",
+      "Bash(streamlit run:*)",
+      "Bash(ollama list:*)",
+      "Bash(python -c \"from langchain_ollama import OllamaEmbeddings; e = OllamaEmbeddings\\(model=''nomic-embed-text''\\); print\\(e.embed_query\\(''test''\\)\\)\")",
+      "Bash(pip show:*)"
+    ]
+  }
+}

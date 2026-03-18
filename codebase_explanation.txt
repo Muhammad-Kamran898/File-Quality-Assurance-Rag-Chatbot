@@ -1,0 +1,778 @@
+================================================================================
+                    FILE QA RAG CHATBOT - COMPLETE CODEBASE EXPLAINED
+================================================================================
+
+TABLE OF CONTENTS:
+------------------
+1. Project Overview (in simple words)
+2. File Structure
+3. Each Component Explained Line-by-Line
+4. Data Flow Diagrams
+5. How Everything Works Together
+6. Key Technologies Used
+
+================================================================================
+1. PROJECT OVERVIEW (IN SIMPLE WORDS)
+================================================================================
+
+This is a PDF Question-Answering App. Here's what it does in simple terms:
+
+    USER UPLOADS PDFs  -->  APP READS PDFs  -->  APP CREATES "SMART SEARCH"
+         |                    |                      |
+    User drops        App extracts text     App converts text to
+    PDF files         from PDFs             numbers (embeddings)
+                                                    |
+                                                    v
+    USER ASKS QUESTIONS  <--  APP FINDS ANSWERS  <--  APP SEARCHES
+         |                    |                      |
+    "What is this         App shows answer      App finds relevant
+    document about?"      with sources           text chunks
+
+Think of it like:
+- You have a super-smart assistant who has read all your PDFs
+- When you ask questions, it finds the exact pages that answer your question
+- It then uses AI to summarize the answer in a human-like way
+
+================================================================================
+2. FILE STRUCTURE
+================================================================================
+
+    Project Folder/
+    │
+    ├── app.py                  # Main application (ALL code is here!)
+    ├── pyproject.toml          # List of required packages/libraries
+    ├── .env                    # Configuration (Ollama settings)
+    ├── README.md               # Basic instructions (usually empty)
+    ├── CLAUDE.md               # AI assistant instructions
+    ├── chroma_db_store/        # Folder where the "smart search" is saved
+    │   └── (database files created at runtime)
+    │
+    └── .venv/                  # Virtual environment (downloaded packages)
+
+================================================================================
+3. EACH COMPONENT EXPLAINED LINE-BY-LINE
+================================================================================
+
+Let's break down app.py piece by piece:
+
+------------------------------------------------------------------------------
+SECTION 1: IMPORTING LIBRARIES (Lines 1-19)
+------------------------------------------------------------------------------
+
+    import streamlit as st           # For creating the web UI
+    import os                        # For working with files/folders
+    import pandas as pd              # For displaying data in tables
+    import tempfile                  # For creating temporary folders
+
+    from langchain_ollama import ChatOllama, OllamaEmbeddings
+                                      # Connect to Ollama AI
+
+    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
+                                      # Special tools for streaming text to UI
+
+    from langchain_core.prompts import ChatPromptTemplate
+                                      # For creating AI prompts/templates
+
+    from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+                                      # Remember chat conversation
+
+    from langchain_core.callbacks.base import BaseCallbackHandler
+                                      # For handling AI responses
+
+    from langchain_community.document_loaders import PyMuPDFLoader
+                                      # Read PDF files
+
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+                                      # Split text into chunks
+
+    from langchain_chroma import Chroma
+                                      # Vector database for "smart search"
+
+    from langchain_classic.chains import create_history_aware_retriever,
+                                       create_retrieval_chain
+                                      # Create the RAG chain
+
+    from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+                                      # Combine documents for AI
+
+    from langchain_core.prompts import MessagesPlaceholder
+                                      # Place where chat history goes
+
+What are these? Think of them as:
+- Streamlit = The builder who creates the web interface
+- LangChain = The brain that connects everything together
+- Ollama = The AI engine running locally on your computer
+- Chroma = The library that stores the "smart search" database
+
+------------------------------------------------------------------------------
+SECTION 2: PAGE SETUP (Lines 21-34)
+------------------------------------------------------------------------------
+
+    st.set_page_config(page_title="File QA ChatBot", page_icon="🤖")
+    st.title("File QA RAG Chatbot with Ollama 🤖")
+
+    # Hide Streamlit's default menu and footer
+    hide_streamlit_style = """
+                <style>
+                #MainMenu {visibility: hidden;}
+                header {visibility: hidden;}
+                footer {visibility: hidden;}
+                .stDeployButton {display:none;}
+                </style>
+                """
+    st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
+This creates:
+- A clean web page title "File QA ChatBot"
+- Hides the default Streamlit menu/header to make it look like a real app
+
+------------------------------------------------------------------------------
+SECTION 3: CONFIGURE_RETRIEVER FUNCTION (Lines 37-100)
+------------------------------------------------------------------------------
+
+@st.cache_resource(ttl="1h", show_spinner=False)
+def configure_retriever(uploaded_files):
+    # Create the embedding model (converts text to numbers)
+    embeddings_model = OllamaEmbeddings(
+        model="nomic-embed-text",
+        base_url="http://localhost:11434"
+    )
+
+    # Where to save the database
+    persist_dir = "./chroma_db_store"
+
+
+    # ---------- CASE 1: USER UPLOADED NEW FILES ----------
+    if uploaded_files:
+        docs = []
+        temp_dir = tempfile.TemporaryDirectory()
+
+        # Step 1: Save each uploaded file temporarily
+        for file in uploaded_files:
+            temp_filepath = os.path.join(temp_dir.name, file.name)
+            with open(temp_filepath, "wb") as f:
+                f.write(file.getvalue())
+
+            # Step 2: Read/load the PDF
+            loader = PyMuPDFLoader(temp_filepath)
+            docs.extend(loader.load())
+
+        # Step 3: Split text into chunks (1500 chars each, 200 overlap)
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1500,
+            chunk_overlap=200
+        )
+        doc_chunks = text_splitter.split_documents(docs)
+
+        # Error check: did we extract any text?
+        if not doc_chunks:
+            st.error("No text could be extracted from the uploaded PDF.")
+            st.stop()
+
+        # Step 4: Create the vector database
+        st.info("Building new database and saving to disk...")
+
+        vector_db = Chroma(
+            persist_directory=persist_dir,
+            embedding_function=embeddings_model
+        )
+
+        # Step 5: Add chunks to database in batches (with progress bar)
+        total_chunks = len(doc_chunks)
+        batch_size = 100
+        progress_text = f"Embedding {total_chunks} chunks..."
+        my_bar = st.progress(0, text=progress_text)
+
+        for i in range(0, total_chunks, batch_size):
+            batch = doc_chunks[i : i + batch_size]
+            vector_db.add_documents(batch)
+            current_progress = min((i + batch_size) / total_chunks, 1.0)
+            chunks_processed = min(i + batch_size, total_chunks)
+            my_bar.progress(
+                current_progress,
+                text=f"Processed {chunks_processed} out of {total_chunks} chunks...",
+            )
+
+        my_bar.empty()
+        return vector_db.as_retriever()
+
+
+    # ---------- CASE 2: NO NEW FILES - LOAD EXISTING DATABASE ----------
+    else:
+        if os.path.exists(persist_dir) and os.listdir(persist_dir):
+            st.success("Loaded existing database from disk!")
+            vector_db = Chroma(
+                persist_directory=persist_dir,
+                embedding_function=embeddings_model
+            )
+            return vector_db.as_retriever()
+        else:
+            st.info("No existing database found. Please upload a PDF in the sidebar.")
+            st.stop()
+
+WHAT THIS DOES IN SIMPLE TERMS:
+
+1. @st.cache_resource(ttl="1h") - Cache this function for 1 hour so it doesn't
+   reload every time the user interacts with the app
+
+2. OllamaEmbeddings - Converts text into "vectors" (lists of numbers)
+   Each piece of text becomes a point in mathematical space
+
+3. Chunk Size 1500 - We cut the PDF into pieces of 1500 characters
+   Overlap 200 - Each chunk overlaps with the previous one by 200 chars
+   This ensures context isn't lost at chunk boundaries
+
+4. Batch Processing - Instead of adding all chunks at once (which could crash),
+   we add 100 at a time with a progress bar
+
+5. ChromaDB - Stores all these vectors on disk in "chroma_db_store" folder
+
+------------------------------------------------------------------------------
+SECTION 4: STREAM HANDLER - FOR REAL-TIME TEXT DISPLAY (Lines 103-114)
+------------------------------------------------------------------------------
+
+    class StreamHandler(BaseCallbackHandler):
+        def __init__(self, container, initial_text=""):
+            self.container = container
+            self.text = initial_text
+            self.ctx = get_script_run_ctx()
+
+        def on_llm_new_token(self, token: str, **kwargs) -> None:
+            add_script_run_ctx(ctx=self.ctx)
+            self.text += token
+            self.container.markdown(self.text)
+
+WHAT THIS DOES:
+
+- When the AI generates text, it comes out token by token (word by word)
+- This class captures each token and displays it immediately on the screen
+- Without this, you'd have to wait for the entire answer before seeing anything
+- get_script_run_ctx() and add_script_run_ctx() are needed because the AI
+  runs in a background thread, and we need to connect it to the UI thread
+
+------------------------------------------------------------------------------
+SECTION 5: POST MESSAGE HANDLER - FOR SOURCE ATTRIBUTION (Lines 117-146)
+------------------------------------------------------------------------------
+
+    class PostMessageHandler(BaseCallbackHandler):
+        def __init__(self, container):
+            BaseCallbackHandler.__init__(self)
+            self.container = container
+            self.sources = []
+
+        def on_retriever_end(self, documents, *, run_id, parent_run_id, **kwargs):
+            source_ids = []
+            for d in documents:
+                source = d.metadata.get("source", "Unknown")
+                page = d.metadata.get("page", "Unknown")
+
+                metadata = {
+                    "source": source,
+                    "page": page,
+                    "content": d.page_content[:200] + "...",
+                }
+                idx = (source, page)
+                if idx not in source_ids:
+                    source_ids.append(idx)
+                    self.sources.append(metadata)
+
+        def on_llm_end(self, response, *, run_id, parent_run_id, **kwargs):
+            if len(self.sources):
+                with self.container:
+                    st.markdown("**Sources:**")
+                    st.dataframe(
+                        data=pd.DataFrame(self.sources[:3]),
+                        use_container_width=True
+                    )
+
+WHAT THIS DOES:
+
+- After the retriever finds relevant document chunks, this captures WHICH
+  documents and WHICH pages were found
+- It stores the source filename and page number
+- After the AI finishes generating the answer, it displays a table showing
+  the top 3 sources used to answer the question
+
+------------------------------------------------------------------------------
+SECTION 6: SIDEBAR - FILE UPLOAD (Lines 149-155)
+------------------------------------------------------------------------------
+
+    # Creates UI element to accept PDF uploads
+    uploaded_files = st.sidebar.file_uploader(
+        label="Upload PDF Files",
+        type=["pdf"],
+        accept_multiple_files=True
+    )
+
+    # Creates a retriever object based on uploaded files
+    retriever = configure_retriever(uploaded_files)
+
+WHAT THIS DOES:
+
+- Creates a file upload button in the sidebar
+- Accepts only PDF files
+- Allows multiple files at once
+- Calls configure_retriever() to process the files
+
+------------------------------------------------------------------------------
+SECTION 7: SETUP OLLAMA LLM (Lines 157-158)
+------------------------------------------------------------------------------
+
+    llm = ChatOllama(
+        model="llama3.2",
+        temperature=0.1,
+        base_url="http://localhost:11434"
+    )
+
+WHAT THIS DOES:
+
+- Connects to the Ollama AI running on your computer
+- Uses "llama3.2" model (the brain)
+- temperature=0.1 means it gives consistent, factual answers (lower = less creative)
+
+------------------------------------------------------------------------------
+SECTION 8: PROMPTS - THE INSTRUCTIONS FOR THE AI (Lines 160-196)
+------------------------------------------------------------------------------
+
+    # Prompt 1: Contextualize question (understand chat history)
+    contextualize_q_system_prompt = (
+        "Given a chat history and the latest user question "
+        "which might reference context in the chat history, "
+        "formulate a standalone question which can be understood "
+        "without the chat history. Do NOT answer the question, "
+        "just reformulate it if needed and otherwise return it as is."
+    )
+
+    contextualize_q_prompt = ChatPromptTemplate.from_messages([
+        ("system", contextualize_q_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
+
+    # Prompt 2: Answer the question
+    qa_system_prompt = (
+        "You are an assistant for question-answering tasks. "
+        "Use the following pieces of retrieved context to answer the question. "
+        "If you don't know the answer, just say that you don't know. "
+        "Keep the answer as concise as possible."
+        "\n\n"
+        "{context}"
+    )
+
+    qa_prompt = ChatPromptTemplate.from_messages([
+        ("system", qa_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
+
+WHAT THESE PROMPTS DO:
+
+Prompt 1 (Contextualize):
+- If user asks "What about that?" - AI reformulates to full question
+- Example: Chat: "I have a document about cats." User: "What breed is it?"
+- Reformulated: "What breed is the cat mentioned in the document?"
+
+Prompt 2 (QA):
+- Tells AI how to behave: be helpful, use context, say if unknown
+- {context} is where the retrieved document chunks go
+
+------------------------------------------------------------------------------
+SECTION 9: BUILD THE RAG CHAIN (Lines 198-200)
+------------------------------------------------------------------------------
+
+    # Create a chain that can handle chat history
+    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+    qa_rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+
+WHAT THIS DOES:
+
+- create_stuff_documents_chain: Takes retrieved documents, combines them,
+  and sends to AI with the question
+- create_retrieval_chain: Combines the history-aware retriever with the
+  question-answer chain into one full pipeline
+
+------------------------------------------------------------------------------
+SECTION 10: CHAT HISTORY (Lines 203-213)
+------------------------------------------------------------------------------
+
+    # Store conversation history
+    streamlit_message_history = StreamlitChatMessageHistory(
+        key="langchain_messages"
+    )
+
+    # If no messages yet, show welcome message
+    if len(streamlit_message_history.messages) == 0:
+        streamlit_message_history.add_ai_message(
+            "How can I help you with your documents today?"
+        )
+
+    # Display all messages
+    for msg in streamlit_message_history.messages:
+        st.chat_message(msg.type).write(msg.content)
+
+WHAT THIS DOES:
+
+- Creates a chat history that persists as long as the user is on the page
+- Starts with a welcome message if it's a new conversation
+- Displays all previous messages (both user and AI)
+
+------------------------------------------------------------------------------
+SECTION 11: HANDLE USER INPUT (Lines 216-238)
+------------------------------------------------------------------------------
+
+    if user_prompt := st.chat_input():
+        st.chat_message("human").write(user_prompt)
+
+        with st.chat_message("ai"):
+            # Create placeholder for streaming text
+            response_placeholder = st.empty()
+
+            # Create container for sources
+            sources_container = st.container()
+
+            # Initialize both callbacks
+            stream_handler = StreamHandler(response_placeholder)
+            pm_handler = PostMessageHandler(sources_container)
+
+            # Configure callbacks
+            config = {"callbacks": [pm_handler, stream_handler]}
+
+            # Run the chain!
+            response = qa_rag_chain.invoke(
+                {"input": user_prompt, "chat_history": streamlit_message_history.messages},
+                config,
+            )
+
+WHAT THIS DOES:
+
+- Waits for user to type a question
+- Displays user's question in the chat
+- Creates empty placeholders for AI response and sources
+- Sets up both handlers (one for streaming, one for sources)
+- Runs the entire RAG chain and displays results
+
+================================================================================
+4. DATA FLOW DIAGRAMS
+================================================================================
+
+DIAGRAM 1: OVERALL SYSTEM ARCHITECTURE
+---------------------------------------
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                         USER INTERFACE (Streamlit)                     │
+    │  ┌──────────────────┐    ┌──────────────────┐    ┌────────────────┐  │
+    │  │   Sidebar        │    │   Chat Area      │    │  Chat Input   │  │
+    │  │   (PDF Upload)   │    │   (Messages)     │    │  (Ask Q)      │  │
+    │  └────────┬─────────┘    └────────┬─────────┘    └───────┬────────┘  │
+    │           │                        │                      │          │
+    └───────────┼────────────────────────┼──────────────────────┼──────────┘
+                │                        │                      │
+                v                        v                      v
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                        LANGCHAIN RAG CHAIN                              │
+    │                                                                          │
+    │   ┌────────────────┐      ┌────────────────┐      ┌───────────────┐  │
+    │   │  History-Aware │      │  Retriever      │      │  LLM (Ollama) │  │
+    │   │  Retriever     │ ───► │  (Find chunks) │ ───► │  (llama3.2)   │  │
+    │   └────────────────┘      └────────────────┘      └───────────────┘  │
+    │          │                       │                                        │
+    │          │                       v                                        │
+    │          │              ┌────────────────┐                                │
+    │          │              │  Chroma DB    │                                │
+    │          │              │  (Vectors)    │                                │
+    │          │              └────────────────┘                                │
+    │          │                                                                   │
+    └──────────┼───────────────────────────────────────────────────────────────┘
+               │
+               v
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                           OLLAMA (Local AI)                              │
+    │   ┌─────────────────────┐        ┌─────────────────────────────────┐    │
+    │   │  llama3.2           │        │  nomic-embed-text               │    │
+    │   │  (Text Generation) │        │  (Creating Embeddings)          │    │
+    │   └─────────────────────┘        └─────────────────────────────────┘    │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+DIAGRAM 2: PDF PROCESSING FLOW
+-------------------------------
+
+    User Uploads PDF
+           │
+           v
+    ┌──────────────────┐
+    │  PyMuPDFLoader   │
+    │  (Reads PDF)     │
+    └────────┬─────────┘
+             │
+             v
+    ┌──────────────────┐
+    │  Extract Text    │  ──► Raw document text
+    │  from PDF        │
+    └────────┬─────────┘
+             │
+             v
+    ┌──────────────────────────┐
+    │  RecursiveCharacter     │
+    │  TextSplitter            │
+    │                          │
+    │  Chunk size: 1500        │  ──► ["Hello world...", "world is ve...", ...]
+    │  Overlap: 200            │
+    └────────┬─────────────────┘
+             │
+             v
+    ┌──────────────────────────┐
+    │  OllamaEmbeddings        │
+    │  (nomic-embed-text)      │
+    │                          │
+    │  Text ──► Numbers        │  ──► [0.123, -0.456, 0.789, ...]
+    │  (Embedding Vector)      │
+    └────────┬─────────────────┘
+             │
+             v
+    ┌──────────────────────────┐
+    │  Chroma Vector DB       │
+    │  (Save to disk)          │
+    │                          │
+    │  ./chroma_db_store/     │
+    └──────────────────────────┘
+
+
+DIAGRAM 3: QUESTION ANSWERING FLOW
+----------------------------------
+
+    User asks: "What is this document about?"
+           │
+           v
+    ┌──────────────────────────────────────────┐
+    │  Step 1: Contextualize Question         │
+    │                                          │
+    │  "What is this document about?"          │
+    │  (No chat history, stays the same)       │
+    └────────────────────┬─────────────────────┘
+                         │
+                         v
+    ┌──────────────────────────────────────────┐
+    │  Step 2: Retrieve Relevant Chunks       │
+    │                                          │
+    │  Search vector DB for similar vectors    │
+    │  Find top matching text chunks           │
+    └────────────────────┬─────────────────────┘
+                         │
+                         v
+    ┌──────────────────────────────────────────┐
+    │  Step 3: Create Prompt with Context     │
+    │                                          │
+    │  System: "You are a helpful assistant..."│
+    │  Context: [retrieved chunk 1]            │
+    │  Context: [retrieved chunk 2]             │
+    │  Context: [retrieved chunk 3]             │
+    │  Question: "What is this document about?"│
+    └────────────────────┬─────────────────────┘
+                         │
+                         v
+    ┌──────────────────────────────────────────┐
+    │  Step 4: LLM Generates Answer            │
+    │                                          │
+    │  llama3.2 processes the prompt          │
+    │  Streams back tokens one by one         │
+    │                                          │
+    │  "This document appears to be about..." │
+    └────────────────────┬─────────────────────┘
+                         │
+                         v
+    ┌──────────────────────────────────────────┐
+    │  Step 5: Display Results                │
+    │                                          │
+    │  - Streamed answer in chat               │
+    │  - Source table showing which pages     │
+    └──────────────────────────────────────────┘
+
+
+DIAGRAM 4: CALLBACK HANDLERS
+----------------------------
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    LLM Generating Response                  │
+    │                   (Tokens come one by one)                   │
+    └──────────────────────────┬──────────────────────────────────┘
+                               │
+              ┌────────────────┴────────────────┐
+              │                                 │
+              v                                 v
+    ┌─────────────────────┐         ┌─────────────────────┐
+    │   StreamHandler     │         │  PostMessageHandler │
+    │                     │         │                     │
+    │ on_llm_new_token:   │         │ on_retriever_end:   │
+    │ - Catch each token  │         │ - Store source docs │
+    │ - Update UI         │         │ - Save page numbers │
+    │   immediately       │         │                     │
+    │                     │         │ on_llm_end:         │
+    │                     │         │ - Show top 3        │
+    │                     │         │   sources table     │
+    └─────────────────────┘         └─────────────────────┘
+
+
+DIAGRAM 5: CHAT HISTORY AWARE RETRIEVAL
+----------------------------------------
+
+    User: "What does it say about cats?"
+           │
+           v
+    ┌────────────────────────────────────────┐
+    │  Chat History:                         │
+    │  - User: "I have a PDF about animals" │
+    │  - AI: "Great! What would you like..." │
+    └────────────────────┬───────────────────┘
+                         │
+                         v
+    ┌────────────────────────────────────────┐
+    │  Contextualize Prompt:                 │
+    │                                          │
+    │  System: " reformulate question..."    │
+    │  History: [chat messages]              │
+    │  Input: "What does it say about cats?" │
+    └────────────────────┬───────────────────┘
+                         │
+                         v
+    ┌────────────────────────────────────────┐
+    │  LLM Reformulates:                     │
+    │                                          │
+    │  "What does the animal PDF say         │
+    │   about cats?"                         │
+    └────────────────────┬───────────────────┘
+                         │
+                         v
+    ┌────────────────────────────────────────┐
+    │  Search Vector DB with:                │
+    │  "What does the animal PDF say         │
+    │   about cats?"                         │
+    └────────────────────────────────────────┘
+
+================================================================================
+5. HOW EVERYTHING WORKS TOGETHER
+================================================================================
+
+STEP-BY-STEP WALKTHROUGH:
+
+1. APP STARTS
+   - Streamlit creates the web page
+   - If no PDF uploaded, loads existing database from disk
+   - Shows welcome message
+
+2. USER UPLOADS PDF
+   - Files appear in sidebar
+   - App detects new files
+   - Reads PDF text, splits into chunks, creates embeddings
+   - Saves everything to ChromaDB
+   - Shows progress bar during processing
+
+3. USER ASKS QUESTION
+   - Types in chat input box
+   - Question appears in chat
+
+4. APP PROCESSES QUESTION
+   a) Reformulates question using chat history (if needed)
+   b) Converts question to embedding vector
+   c) Searches ChromaDB for similar vectors
+   d) Gets top matching text chunks
+   e) Sends chunks + question to Ollama LLM
+   f) LLM generates answer (token by token)
+   g) StreamHandler shows answer as it's generated
+   h) PostMessageHandler shows source documents
+
+5. USER ASKS ANOTHER QUESTION
+   - Chat history is updated
+   - If question references previous context, it's reformulated
+   - Process repeats
+
+================================================================================
+6. KEY TECHNOLOGIES USED
+================================================================================
+
+    ┌──────────────────────┬─────────────────────────────────────────────────┐
+    │ Technology           │ What It Does                                    │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ Streamlit            │ Creates the web interface (buttons, chat, etc) │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ LangChain            │ Connects all AI components together            │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ Ollama               │ Runs AI models locally on your computer        │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ llama3.2             │ The main AI brain for generating answers       │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ nomic-embed-text     │ Converts text to mathematical vectors          │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ Chroma               │ Vector database to store and search embeddings  │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ PyMuPDF              │ Reads PDF files and extracts text              │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ RecursiveCharacter   │ Splits text into overlapping chunks             │
+    │ TextSplitter         │                                                 │
+    ├──────────────────────┼─────────────────────────────────────────────────┤
+    │ StreamlitChatMessage │ Stores conversation history                     │
+    │ History              │                                                 │
+    └──────────────────────┴─────────────────────────────────────────────────┘
+
+================================================================================
+7. ENVIRONMENT CONFIGURATION (.env)
+================================================================================
+
+    OLLAMA_BASE_URL=http://localhost:11434
+        └── Where Ollama is running (local computer)
+
+    OLLAMA_MODEL=llama3.2
+        └── AI model for generating answers
+
+    OLLAMA_EMBED_MODEL=nomic-embed-text
+        └── AI model for creating embeddings
+
+================================================================================
+8. DEPENDENCIES (pyproject.toml)
+================================================================================
+
+    streamlit          - Web UI framework
+    langchain          - AI chain framework
+    langchain-community - Additional LangChain tools
+    langchain-ollama  - Connect to Ollama
+    chromadb           - Vector database
+    pymupdf            - PDF reader
+    pyngrok            - For exposing app to internet (optional)
+
+================================================================================
+9. KEY CONCEPTS EXPLAINED
+================================================================================
+
+WHAT IS RAG?
+    RAG = Retrieval-Augmented Generation
+    Instead of the AI making up answers, it:
+    1. Finds relevant document parts (retrieval)
+    2. Uses them as context (augmentation)
+    3. Generates answer (generation)
+
+WHAT IS AN EMBEDDING?
+    An embedding is a list of numbers that represents the "meaning" of text.
+    Similar concepts have similar numbers.
+    Example: "cat" and "dog" have similar embeddings (both are pets)
+    "cat" and "car" have different embeddings
+
+WHAT IS A VECTOR DATABASE?
+    A database that stores embeddings instead of regular data.
+    Allows "semantic search" - finding similar meanings, not just exact matches.
+
+WHAT IS A RETRIEVER?
+    Something that finds relevant documents from a database.
+    Takes a question, returns the most relevant text chunks.
+
+WHAT IS A CHAIN?
+    A series of connected AI components.
+    Data flows through each component step by step.
+
+WHAT IS CALLBACK HANDLER?
+    Code that runs at specific points during AI processing.
+    - StreamHandler: Runs every time a new token is generated
+    - PostMessageHandler: Runs after retrieval and after generation
+
+================================================================================
+                              END OF EXPLANATION
+================================================================================
